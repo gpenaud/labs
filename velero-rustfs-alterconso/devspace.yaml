@@ -1,0 +1,124 @@
+version: v2beta1
+
+vars:
+  RELEASE: local
+  NAMESPACE: default
+  ALTERCONSO_PATH: ./../alterconso
+
+imports:
+  - path: ${ALTERCONSO_PATH}/devspace.yaml
+    enabled: true
+
+pipelines:  
+  deploy: |-
+    install_velero_cli
+    create_storage_path
+    create_deployments --all
+  purge: |-
+    purge_deployments --all
+    clean_storage_path
+
+deployments:
+  alterconso:
+    namespace: ${NAMESPACE}
+    helm:
+      chart:
+        path: ${ALTERCONSO_PATH}/helm
+      valuesFiles:
+        - ${ALTERCONSO_PATH}/helm/values.yaml
+      values:
+        webapp:
+          image:
+            version: dev-latest
+        database:
+          persistentVolume:
+            local:
+              path: ${STORAGE_PATH}
+
+  rustfs:
+    namespace: ${NAMESPACE}
+    helm:
+      chart:
+        repo: https://rustfs.github.io/helm
+        name: rustfs
+      values:
+        mode:
+          standalone:
+            enabled: true
+          distributed:
+            enabled: false
+        secret:
+          rustfs:
+            access_key: rustfsadmin
+            secret_key: rustfsadmin
+        storageclass:
+          name: local-path
+        ingress:
+          className: ""
+          customAnnotations:
+            kubernetes.io/ingress.class: traefik
+            cert-manager.io/cluster-issuer: mkcert
+          hosts:
+            - host: rustfs.localhost
+              paths:
+                - path: /
+                  pathType: Prefix
+          tls:
+            enabled: true
+            secretName: rustfs.localhost-tls
+
+  velero:
+    helm:
+      chart:
+        repo: https://vmware-tanzu.github.io/helm-charts
+        name: velero
+        version: 11.3.2
+      values:
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.10.0
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: aws
+              bucket: velero
+              config:
+                region: minio
+                s3ForcePathStyle: "true"
+                s3Url: http://rustfs-svc:9000
+          volumeSnapshotLocation:
+            - name: default
+              provider: aws
+              config:
+                region: minio
+                s3ForcePathStyle: "true"
+                s3Url: http://rustfs-svc:9000
+        kubectl:
+          image:
+            repository: public.ecr.aws/bitnami/kubectl
+            tag: latest
+        credentials:
+          secretContents:
+            cloud: |
+              [default]
+              aws_access_key_id = rustfsadmin
+              aws_secret_access_key = rustfsadmin
+
+functions:
+  create_storage_path: mkdir -p ${STORAGE_PATH}
+  clean_storage_path: sudo rm -rf ${STORAGE_PATH:-/void}
+  install_velero_cli: |-
+    /usr/local/bin/velero &>/dev/null || (
+      curl -L https://github.com/vmware-tanzu/velero/releases/download/v1.17.2/velero-v1.17.2-linux-amd64.tar.gz -o velero-v1.17.2-linux-amd64.tar.gz && \
+      tar -xvf velero-v1.17.2-linux-amd64.tar.gz && sudo mv velero-v1.17.2-linux-amd64/velero /usr/local/bin/ && rm -rf velero-v1.17.2-linux-amd64*
+    )
+
+commands:
+  backup-alterconso:
+    description: Execute a cli-based velero backup on alterconso  
+    command: |-
+      velero backup create alterconso-backup --selector app.kubernetes.io/component=alterconso-database --namespace=default
