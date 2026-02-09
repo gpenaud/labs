@@ -1,0 +1,9 @@
+
+# devspace ignores
+#
+.devspace
+
+# temporary ignores
+#
+devspace
+rustfs
