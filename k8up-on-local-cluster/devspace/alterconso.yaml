@@ -1,0 +1,48 @@
+version: v2beta1
+
+vars:
+  ALTERCONSO_STORAGE_PATH: /tmp/devspace-alterconso
+  ALTERCONSO_PATH: ./../../alterconso
+  # determined thourgh direnv + local .envrc file, not hardcoded here for security reasons
+  ALTERCONSO_DB_PASSWORD:
+    source: env
+    name: ALTERCONSO_DB_PASSWORD
+
+imports:
+  - path: ${ALTERCONSO_PATH}/devspace.yaml
+    enabled: true
+
+functions:
+  alterconso_create_storage_path: mkdir -p ${ALTERCONSO_STORAGE_PATH}
+  alterconso_clean_storage_path: sudo rm -rf ${ALTERCONSO_STORAGE_PATH:-/void}
+
+deployments:
+  alterconso:
+    namespace: ${NAMESPACE}
+    helm:
+      chart:
+        path: ${ALTERCONSO_PATH}/helm
+      valuesFiles:
+        - ${ALTERCONSO_PATH}/helm/values.yaml
+      values:
+        webapp:
+          image:
+            version: dev-latest            
+        database:
+          annotations:
+            k8up.io/backupcommand: mysqldump --hex-blob --no-tablespaces -uroot -p${ALTERCONSO_DB_PASSWORD} alterconso
+          securityContext:
+            fsGroup: 1000
+            runAsUser: 1000
+            runAsGroup: 1000
+          persistentVolume:
+            local:
+              path: ${ALTERCONSO_STORAGE_PATH}
+            nodeAffinity:
+              required:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - work
