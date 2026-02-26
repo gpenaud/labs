@@ -1,0 +1,49 @@
+version: v2beta1
+
+functions: 
+  rustfs_install_cli: |-
+    /usr/local/bin/mc ls &>/dev/null || (
+      wget https://dl.min.io/client/mc/release/linux-amd64/mc && sudo mv mc /usr/local/bin/ && sudo chmod +x /usr/local/bin/mc && \
+      mc alias set rustfs http://rustfs.localhost:32000 rustfsadmin rustfsadmin
+      mc mb rustfs/velero
+    )
+
+  rustfs_clean_pvcs: |-
+    kubectl --context local get pvc rustfs-data 2>/dev/null && kubectl --context local delete pvc rustfs-data ; \
+    kubectl --context local get pvc rustfs-logs 2>/dev/null && kubectl --context local delete pvc rustfs-logs
+
+deployments:
+  rustfs:
+    namespace: ${NAMESPACE}
+    helm:
+      chart:
+        repo: https://rustfs.github.io/helm
+        name: rustfs
+      values:
+        mode:
+          standalone:
+            enabled: true
+          distributed:
+            enabled: false
+        secret:
+          rustfs:
+            access_key: rustfsadmin
+            secret_key: rustfsadmin
+        storageclass:
+          name: local-path
+        service: 
+          # type: NodePort
+          type: ClusterIP
+        ingress:
+          className: ""
+          customAnnotations:
+            kubernetes.io/ingress.class: traefik
+            cert-manager.io/cluster-issuer: mkcert
+          hosts:
+            - host: rustfs.localhost
+              paths:
+                - path: /
+                  pathType: Prefix
+          tls:
+            enabled: true
+            secretName: rustfs.localhost-tls
