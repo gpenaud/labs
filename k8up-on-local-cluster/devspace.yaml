@@ -1,0 +1,150 @@
+version: v2beta1
+
+vars:
+  RELEASE: local
+  NAMESPACE: default
+
+imports:
+  - path: ./devspace/alterconso.yaml
+    enabled: true
+  - path: ./devspace/rustfs.yaml
+    enabled: true
+  - path: ./devspace/prometheus.yaml
+    enabled: false
+
+pipelines:  
+  deploy: |-
+    rustfs_install_cli
+    alterconso_create_storage_path    
+    create_deployments --all
+    k8up_install_crds
+    create_deployments k8up-backup-secrets
+    create_deployments k8up-alterconso-podconfig
+    create_deployments k8up-alterconso-backup
+  purge: |-
+    purge_deployments --all
+    alterconso_clean_storage_path
+    rustfs_clean_pvcs
+
+functions:
+  k8up_install_crds: |-
+    kubectl --context local get customresourcedefinition.apiextensions.k8s.io/backups.k8up.io >/dev/null || (
+      kubectl --context local apply -f https://github.com/k8up-io/k8up/releases/download/k8up-4.8.6/k8up-crd.yaml --server-side
+    )
+
+deployments:
+  k8up:
+    helm:
+      chart:
+        repo: https://k8up-io.github.io/k8up
+        name: k8up
+        version: 4.8.6
+      values: {}
+
+  k8up-backup-secrets:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: v1
+        kind: Secret
+        type: Opaque
+        metadata:
+          name: k8up
+        data:
+          AWS_ACCESS_KEY_ID: cnVzdGZzYWRtaW4=
+          AWS_SECRET_ACCESS_KEY: cnVzdGZzYWRtaW4=
+          RESTIC_PASSWORD: Y2hhbmdlbWU=
+
+  k8up-alterconso-podconfig:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: k8up.io/v1
+        kind: PodConfig
+        metadata:
+          name: alterconso
+        spec:
+          template:
+            spec:
+              containers:
+                - name: backup
+                  securityContext:
+                    runAsUser: 1000
+                    runAsGroup: 1000
+                  env:
+                    - name: BACKUP_SKIP_WITHOUT_ANNOTATION
+                      value: "true"
+                  securityContext:
+                    allowPrivilegeEscalation: true
+
+  k8up-alterconso-backup:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: k8up.io/v1
+        kind: Backup
+        metadata:
+          name: alterconso
+        spec:
+          failedJobsHistoryLimit: 2
+          successfulJobsHistoryLimit: 2
+          podConfigRef:
+            name: alterconso
+          backend:
+            repoPasswordSecretRef:
+              name: k8up
+              key: RESTIC_PASSWORD
+            s3:
+              endpoint: http://rustfs-svc:9000
+              bucket: backups
+              accessKeyIDSecretRef:
+                name: k8up
+                key: AWS_ACCESS_KEY_ID
+              secretAccessKeySecretRef:
+                name: k8up
+                key: AWS_SECRET_ACCESS_KEY
+
+  # k8up-alterconso-schedule:
+  #   kubectl:
+  #     inlineManifest: |-
+  #       apiVersion: k8up.io/v1
+  #       kind: Schedule
+  #       metadata:
+  #         name: schedule-alterconso-backup
+  #       spec:
+  #         backend:
+  #           repoPasswordSecretRef:
+  #             name: backup-secrets
+  #             key: RESTIC_PASSWORD
+  #           s3:
+  #             endpoint: http://rustfs-svc:9000
+  #             bucket: backups
+  #             accessKeyIDSecretRef:
+  #               name: backup-secrets
+  #               key: AWS_ACCESS_KEY_ID
+  #             secretAccessKeySecretRef:
+  #               name: backup-secrets
+  #               key: AWS_SECRET_ACCESS_KEY
+  #         backup:
+  #           schedule: '*/5 * * * *'
+  #           failedJobsHistoryLimit: 2
+  #           successfulJobsHistoryLimit: 2
+  #           # optional
+  #           #promURL: https://prometheus-io-instance:8443
+  #         check:
+  #           schedule: '0 1 * * 1'
+  #           # optional
+  #           #promURL: https://prometheus-io-instance:8443
+  #         prune:
+  #           schedule: '0 1 * * 0'
+  #           retention:
+  #             keepLast: 5
+  #             keepDaily: 14
+
+commands:
+  purge_storage:
+    description: Clean up local storage path used for alterconso data persistence
+    command: |-
+      kubectl --context local delete pvc --all
+
+  purge_cli_tools:
+    description: Remove velero and minio CLIs from local machine
+    command: |-
+      sudo rm -f /usr/local/bin/mc
