@@ -5,18 +5,20 @@ vars:
   NAMESPACE: default
 
 imports:
-  - path: ./devspace/alterconso.yaml
+  - path: ./devspaces/alterconso.yaml
     enabled: true
-  - path: ./devspace/rustfs.yaml
+  - path: ./devspaces/rustfs.yaml
     enabled: true
-  - path: ./devspace/prometheus.yaml
+  - path: ./devspaces/prometheus.yaml
     enabled: false
 
 pipelines:  
   deploy: |-
     rustfs_install_cli
     alterconso_create_storage_path    
-    create_deployments --all
+    create_deployments rustfs
+    create_deployments alterconso
+    create_deployments k8up
     k8up_install_crds
     create_deployments k8up-backup-secrets
     create_deployments k8up-alterconso-podconfig
