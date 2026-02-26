@@ -1,0 +1,10 @@
+version: v2beta1
+
+deployments:
+  prometheus:
+    namespace: ${NAMESPACE}
+    helm:
+      chart:
+        repo: oci://ghcr.io/prometheus-community/charts/prometheus
+        name: prometheus
+      values: {}
