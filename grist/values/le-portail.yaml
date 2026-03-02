@@ -1,0 +1,44 @@
+
+image:
+  tag: "1.7.11"
+loadBalancer: 
+  enabled: false
+homeWorker:
+  probes:
+    liveness:
+      path: /status?db=1
+      initialDelaySeconds: 10
+    startup:
+      path: /status?db=1
+      initialDelaySeconds: 10
+docWorker:
+  replicas: 1
+  useVolume:
+    enabled: true
+    storageSize: "15Gi"
+  probes:
+    liveness:
+      path: /status?db=1&docWorkerRegistered=1
+      initialDelaySeconds: 10
+    startup:
+      path: /status?db=1&docWorkerRegistered=1
+      initialDelaySeconds: 10 
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-production-clusterissuer
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.middlewares: default-grist-basic-auth@kubernetescrd,default-grist-redirect-to-https@kubernetescrd
+  hosts:
+    - host: grist.leportail.org
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    enabled: true
+    additional:
+      - secretName: grist.leportail.org-tls
+        hosts:
+          - grist.leportail.org

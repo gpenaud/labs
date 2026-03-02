@@ -1,6 +1,43 @@
-
 version: v2beta1
 
-imports:
-  - path: ./devspaces/${DEVSPACE_CONTEXT}/grist.yaml
-    enabled: true
+vars:
+  NAMESPACE: default
+
+pipelines:  
+  deploy: |-
+    create_deployments grist-basic-auth-middleware grist-redirect-to-https-middleware
+    create_deployments grist
+
+deployments:
+  grist-redirect-to-https-middleware:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: grist-redirect-to-https
+        spec:
+          redirectRegex:
+            regex: "^http://(.*)"
+            replacement: "https://$1"
+            permanent: true
+
+  grist-basic-auth-middleware:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: grist-basic-auth
+        spec:
+          basicAuth:
+            secret: grist-basic-auth
+
+  grist:
+    helm:
+      chart:
+        git: https://github.com/gpenaud/helm-charts-dirnum
+        subPath: charts/grist
+        branch: feature/make-loadbalancer-component-optional
+      valuesFiles:
+        - ./values/${DEVSPACE_CONTEXT}.yaml
