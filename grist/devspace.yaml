@@ -1,0 +1,6 @@
+
+version: v2beta1
+
+imports:
+  - path: ./devspaces/${DEVSPACE_CONTEXT}/grist.yaml
+    enabled: true
