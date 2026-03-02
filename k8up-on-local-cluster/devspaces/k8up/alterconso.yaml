@@ -1,0 +1,127 @@
+version: v2beta1
+
+vars:
+  CURRENT_DATE:
+    command: date
+    args: ["+%Y%m%d-%H%M%S"]
+
+deployments:
+  k8up-alterconso-podconfig:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: k8up.io/v1
+        kind: PodConfig
+        metadata:
+          name: alterconso
+        spec:
+          template:
+            spec:
+              containers:
+                - name: backup
+                  securityContext:
+                    allowPrivilegeEscalation: true
+                    runAsUser: 1000
+                    runAsGroup: 1000
+
+  k8up-alterconso-backup:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: k8up.io/v1
+        kind: Backup
+        metadata:
+          name: alterconso-${CURRENT_DATE}
+        spec:
+          failedJobsHistoryLimit: 2
+          successfulJobsHistoryLimit: 2
+          podConfigRef:
+            name: alterconso
+          backend:
+            repoPasswordSecretRef:
+              name: k8up
+              key: RESTIC_PASSWORD
+            s3:
+              endpoint: http://rustfs-svc:9000
+              bucket: backups
+              accessKeyIDSecretRef:
+                name: k8up
+                key: AWS_ACCESS_KEY_ID
+              secretAccessKeySecretRef:
+                name: k8up
+                key: AWS_SECRET_ACCESS_KEY
+
+  k8up-alterconso-restore:
+    kubectl:
+      inlineManifest: |-
+        apiVersion: k8up.io/v1
+        kind: Restore
+        metadata:
+          name: alterconso-${CURRENT_DATE}
+        spec:
+          snapshot: 407948a0
+          podSecurityContext:
+            runAsUser: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+          restoreMethod:
+            folder:
+              claimName: alterconso-database
+          backend:
+            repoPasswordSecretRef:
+              name: k8up
+              key: RESTIC_PASSWORD
+            s3:
+              endpoint: http://rustfs-svc:9000
+              bucket: backups
+              accessKeyIDSecretRef:
+                name: k8up
+                key: AWS_ACCESS_KEY_ID
+              secretAccessKeySecretRef:
+                name: k8up
+                key: AWS_SECRET_ACCESS_KEY
+        ---
+        apiVersion: k8up.io/v1
+        kind: Restore
+        metadata:
+          name: alterconso-dump-${CURRENT_DATE}
+        spec:
+          snapshot: b2de843b
+          podSecurityContext:
+            runAsUser: 1000
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+          restoreMethod:
+            folder:
+              claimName: alterconso-database
+          backend:
+            repoPasswordSecretRef:
+              name: k8up
+              key: RESTIC_PASSWORD
+            s3:
+              endpoint: http://rustfs-svc:9000
+              bucket: backups
+              accessKeyIDSecretRef:
+                name: k8up
+                key: AWS_ACCESS_KEY_ID
+              secretAccessKeySecretRef:
+                name: k8up
+                key: AWS_SECRET_ACCESS_KEY
+
+commands:
+  restore-alterconso-through-k8up:
+    description: Restore alterconso database to local k3s server using k8up
+    command: |-
+      # k8up cli restore \
+      #   --kubeconfig ~/.k3s/config \
+      #   --restoreMethod pvc \
+      #   --secretRef k8up \
+      #   --secretRefKey RESTIC_PASSWORD \
+      #   --namespace default \
+      #   --s3endpoint http://rustfs-svc:9000 \
+      #   --s3bucket backups \
+      #   --s3secretRef k8up \
+      #   --S3SecretRefUsernameKey AWS_ACCESS_KEY_ID \
+      #   --S3SecretRefPasswordKey AWS_SECRET_ACCESS_KEY \
+      #   --claimName alterconso-database \
+      #   --runAsUser 0
+
+      kubectl --context local exec -i alterconso-database-0 -- mysql -u root -proot --binary-mode --max_allowed_packet=64M db < /tmp/devspace-alterconso/default-alterconso.sql
