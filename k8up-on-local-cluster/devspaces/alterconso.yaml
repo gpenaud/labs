@@ -15,6 +15,7 @@ imports:
 functions:
   alterconso_create_storage_path: mkdir -p ${ALTERCONSO_STORAGE_PATH}
   alterconso_clean_storage_path: sudo rm -rf ${ALTERCONSO_STORAGE_PATH:-/void}
+  alterconso_import_backup: env | grep -q '^NO_IMPORT=' || kubectl --context local exec -i alterconso-database-0 -- mysql -u root -proot --binary-mode --max_allowed_packet=64M db < ./backups/alterconso.sql
 
 deployments:
   alterconso:
@@ -30,12 +31,14 @@ deployments:
             version: dev-latest            
         database:
           annotations:
-            k8up.io/backupcommand: mysqldump --hex-blob --no-tablespaces -uroot -p${ALTERCONSO_DB_PASSWORD} alterconso
+            k8up.io/backupcommand: mysqldump --hex-blob --no-tablespaces -uroot -proot db
+            k8up.io/file-extension: .sql
           securityContext:
             fsGroup: 1000
             runAsUser: 1000
             runAsGroup: 1000
           persistentVolume:
+            backup: true
             local:
               path: ${ALTERCONSO_STORAGE_PATH}
             nodeAffinity:
@@ -46,3 +49,9 @@ deployments:
                     operator: In
                     values:
                       - work
+
+commands:
+  restore-alterconso:
+    description: Restore alterconso database to local k3s server
+    command: |-
+      kubectl --context local exec -i alterconso-database-0 -- mysql -u root -proot --binary-mode --max_allowed_packet=64M db < ./backups/alterconso.sql
