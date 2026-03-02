@@ -11,28 +11,55 @@ imports:
     enabled: true
   - path: ./devspaces/prometheus.yaml
     enabled: false
+  - path: ./devspaces/k8up/alterconso.yaml
+    enabled: true
 
 pipelines:  
   deploy: |-
     rustfs_install_cli
-    alterconso_create_storage_path    
-    create_deployments rustfs
-    create_deployments alterconso
-    create_deployments k8up
+    alterconso_create_storage_path
+    create_deployments alterconso dockerconfigjson
+    wait_few_seconds
+    alterconso_import_backup
+    create_deployments rustfs k8up k8up-backup-secrets
     k8up_install_crds
-    create_deployments k8up-backup-secrets
-    create_deployments k8up-alterconso-podconfig
-    create_deployments k8up-alterconso-backup
+  backup: |-
+    create_deployments k8up-alterconso-podconfig k8up-alterconso-backup
+  restore: |-
+    create_deployments k8up-alterconso-restore
   purge: |-
     purge_deployments --all
     alterconso_clean_storage_path
     rustfs_clean_pvcs
+    k8up_remove_all_resources
+
+hooks:
+  - name: "wait-for-rustfs-is-running"
+    events: ["after:deploy:rustfs"]
+    wait:
+      running: true
+      terminatedWithCode: 0
+    container:
+      labelSelector:
+        app.kubernetes.io/name: rustfs
+  - name: "wait-for-alterconso-database-is-running"
+    events: ["after:deploy:alterconso"]
+    wait:
+      running: true
+      terminatedWithCode: 0
+    container:
+      labelSelector:
+        app.kubernetes.io/component: alterconso-database
 
 functions:
+  wait_few_seconds: sleep 5
   k8up_install_crds: |-
     kubectl --context local get customresourcedefinition.apiextensions.k8s.io/backups.k8up.io >/dev/null || (
       kubectl --context local apply -f https://github.com/k8up-io/k8up/releases/download/k8up-4.8.6/k8up-crd.yaml --server-side
     )
+  k8up_remove_all_resources: |-
+    kubectl --context local delete --all backups.k8up.io
+    kubectl --context local delete --all restores.k8up.io
 
 deployments:
   k8up:
@@ -41,7 +68,9 @@ deployments:
         repo: https://k8up-io.github.io/k8up
         name: k8up
         version: 4.8.6
-      values: {}
+      values:
+        k8up: 
+          skipWithoutAnnotation: true
 
   k8up-backup-secrets:
     kubectl:
@@ -55,90 +84,6 @@ deployments:
           AWS_ACCESS_KEY_ID: cnVzdGZzYWRtaW4=
           AWS_SECRET_ACCESS_KEY: cnVzdGZzYWRtaW4=
           RESTIC_PASSWORD: Y2hhbmdlbWU=
-
-  k8up-alterconso-podconfig:
-    kubectl:
-      inlineManifest: |-
-        apiVersion: k8up.io/v1
-        kind: PodConfig
-        metadata:
-          name: alterconso
-        spec:
-          template:
-            spec:
-              containers:
-                - name: backup
-                  securityContext:
-                    runAsUser: 1000
-                    runAsGroup: 1000
-                  env:
-                    - name: BACKUP_SKIP_WITHOUT_ANNOTATION
-                      value: "true"
-                  securityContext:
-                    allowPrivilegeEscalation: true
-
-  k8up-alterconso-backup:
-    kubectl:
-      inlineManifest: |-
-        apiVersion: k8up.io/v1
-        kind: Backup
-        metadata:
-          name: alterconso
-        spec:
-          failedJobsHistoryLimit: 2
-          successfulJobsHistoryLimit: 2
-          podConfigRef:
-            name: alterconso
-          backend:
-            repoPasswordSecretRef:
-              name: k8up
-              key: RESTIC_PASSWORD
-            s3:
-              endpoint: http://rustfs-svc:9000
-              bucket: backups
-              accessKeyIDSecretRef:
-                name: k8up
-                key: AWS_ACCESS_KEY_ID
-              secretAccessKeySecretRef:
-                name: k8up
-                key: AWS_SECRET_ACCESS_KEY
-
-  # k8up-alterconso-schedule:
-  #   kubectl:
-  #     inlineManifest: |-
-  #       apiVersion: k8up.io/v1
-  #       kind: Schedule
-  #       metadata:
-  #         name: schedule-alterconso-backup
-  #       spec:
-  #         backend:
-  #           repoPasswordSecretRef:
-  #             name: backup-secrets
-  #             key: RESTIC_PASSWORD
-  #           s3:
-  #             endpoint: http://rustfs-svc:9000
-  #             bucket: backups
-  #             accessKeyIDSecretRef:
-  #               name: backup-secrets
-  #               key: AWS_ACCESS_KEY_ID
-  #             secretAccessKeySecretRef:
-  #               name: backup-secrets
-  #               key: AWS_SECRET_ACCESS_KEY
-  #         backup:
-  #           schedule: '*/5 * * * *'
-  #           failedJobsHistoryLimit: 2
-  #           successfulJobsHistoryLimit: 2
-  #           # optional
-  #           #promURL: https://prometheus-io-instance:8443
-  #         check:
-  #           schedule: '0 1 * * 1'
-  #           # optional
-  #           #promURL: https://prometheus-io-instance:8443
-  #         prune:
-  #           schedule: '0 1 * * 0'
-  #           retention:
-  #             keepLast: 5
-  #             keepDaily: 14
 
 commands:
   purge_storage:
