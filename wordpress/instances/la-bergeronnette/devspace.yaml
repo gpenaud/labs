@@ -1,0 +1,97 @@
+version: v2beta1
+
+vars:
+  INSTANCE_NAME: la-bergeronnette
+  LAST_DATA_BACKUP: $(ls -tp ./backups/data/${INSTANCE_NAME}-*.tgz 2>/dev/null | head -n 1)
+  LAST_MARIADB_BACKUP: $(ls -tp ./backups/mariadb/${INSTANCE_NAME}-*.sql 2>/dev/null | head -n 1)  
+
+imports: []
+
+pipelines:  
+  deploy: |-
+    create_deployments --all
+  purge: |-
+    purge_deployments --all
+    remove_pvcs --all
+
+deployments:
+  la-bergeronnette:
+    helm:
+      chart:
+        repo: https://charts.bitnami.com/bitnami
+        name: wordpress
+        version: 28.1.7
+      values:
+        wordpressUsername: ${INSTANCE_NAME}
+        wordpressPassword: "${INSTANCE_NAME}"
+        wordpressEmail: ${INSTANCE_NAME}@gmail.com
+        mariadb:
+          auth:
+            rootPassword: "bn_wordpress"
+            database: bitnami_wordpress
+            username: bn_wordpress
+            password: "bn_wordpress"
+        wordpressPlugins: []
+        service:
+          type: ClusterIP
+        ingress:
+          enabled: true
+          ingressClassName: traefik
+          hostname: ${INSTANCE_NAME}.localhost
+          annotations:
+            kubernetes.io/ingress.class: traefik
+            cert-manager.io/cluster-issuer: mkcert
+          extraTls:
+            - hosts:
+                - ${INSTANCE_NAME}.localhost
+              secretName: ${INSTANCE_NAME}.localhost-tls
+
+functions:
+  remove_pvcs: |-
+    PVC_NAME=$(kubectl --context local get pvc -l app.kubernetes.io/name=mariadb,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+    kubectl --context local delete pvc $PVC_NAME 2>/dev/null || true
+
+commands:
+  backup-mariadb:
+    description: Backup the mariadb database from epi-libres cluster
+    command: |-
+      SECRET_NAME=$(kubectl --context local get secret -l app.kubernetes.io/name=mariadb,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+      DB_PASS=$(kubectl --context local get secret $SECRET_NAME -o jsonpath="{.data.mariadb-password}" | base64 --decode)
+      POD_NAME=$(kubectl --context local get pod -l app.kubernetes.io/name=mariadb,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+
+      kubectl --context local exec $POD_NAME -c mariadb -- sh -c 'mariadb-dump -u bn_wordpress -pbn_wordpress bitnami_wordpress > /tmp/backup.sql'
+      kubectl --context local cp -c mariadb --retries=-1 $POD_NAME:/tmp/backup.sql ./backups/mariadb/${INSTANCE_NAME}-$(date '+%Y%m%d-%H%M%S').sql
+      kubectl --context local exec $POD_NAME -c mariadb -- rm /tmp/backup.sql
+
+  backup-data:
+    description: Backup the data from epi-libres cluster
+    command: |-
+      POD_NAME=$(kubectl --context local get pod -l app.kubernetes.io/name=wordpress,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+      kubectl --context local exec -i "$POD_NAME" -c wordpress -- tar -C /bitnami/wordpress/ -czvf - . > ./backups/data/${INSTANCE_NAME}-$(date '+%Y%m%d-%H%M%S').tgz
+        
+  backup: 
+    description: Backup both data and database from epi-libres cluster
+    command: |-
+      devspace run backup-mariadb
+      devspace run backup-data
+
+  restore:
+    description: Restore both data and database to local cluster
+    command: |-
+      echo $LAST_MARIADB_BACKUP
+      if [ -f "$LAST_MARIADB_BACKUP" ]; then
+        POD_NAME=$(kubectl --context local get pod -l app.kubernetes.io/name=mariadb,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+        kubectl --context local exec -i "$POD_NAME" -c mariadb -- mariadb -u bn_wordpress -p"bn_wordpress" bitnami_wordpress < "$LAST_MARIADB_BACKUP"
+      else
+        echo "No mariadb backup found, skipping database restore"
+      fi
+
+      if [ -f "$LAST_DATA_BACKUP" ]; then
+        POD_NAME=$(kubectl --context local get pod -l app.kubernetes.io/name=wordpress,app.kubernetes.io/instance=$INSTANCE_NAME -o jsonpath="{.items[0].metadata.name}")
+        kubectl --context local cp "$LAST_DATA_BACKUP" "$POD_NAME":/tmp/backup.tgz
+        kubectl --context local exec -i "$POD_NAME" -c wordpress -- mv /bitnami/wordpress/wp-config.php /tmp/wp-config.php
+        kubectl --context local exec -i "$POD_NAME" -c wordpress -- tar -C /bitnami/wordpress/ -xzvf /tmp/backup.tgz --strip-components=1
+        kubectl --context local exec -i "$POD_NAME" -c wordpress -- mv /tmp/wp-config.php /bitnami/wordpress/wp-config.php && rm /tmp/backup.tgz
+      else
+        echo "No data backup found, skipping data restore"
+      fi
